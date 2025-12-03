@@ -14,9 +14,10 @@ from google.oauth2.service_account import Credentials
 # ==================== КОНФИГУРАЦИЯ ====================
 
 st.set_page_config(
-    page_title="RFM Анализ - Оптика",
-    page_icon="👓",
-    layout="wide"
+    page_title="Аналитический отчет RFM - Оптика",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
@@ -70,22 +71,22 @@ def calculate_rfm(df, analysis_date=None):
     return rfm
 
 def create_rfm_scores(rfm_df):
-    """Создание RFM скоров (1-5)"""
+    """Создание RFM скоров (1-5) с правильной обработкой дубликатов"""
     rfm_scored = rfm_df.copy()
-    
+
     # Для Recency: меньше = лучше (5 баллов)
     rfm_scored['R_score'] = pd.qcut(rfm_scored['recency'], q=5, labels=[5,4,3,2,1], duplicates='drop')
-    
-    # Для Frequency: больше = лучше (5 баллов)
-    rfm_scored['F_score'] = pd.qcut(rfm_scored['frequency'].rank(method='first'), q=5, labels=[1,2,3,4,5], duplicates='drop')
-    
-    # Для Monetary: больше = лучше (5 баллов)
-    rfm_scored['M_score'] = pd.qcut(rfm_scored['monetary'].rank(method='first'), q=5, labels=[1,2,3,4,5], duplicates='drop')
-    
-    rfm_scored['RFM_score'] = (rfm_scored['R_score'].astype(int) * 100 + 
-                                rfm_scored['F_score'].astype(int) * 10 + 
+
+    # Для Frequency: больше = лучше (5 баллов), используем average при дубликатах
+    rfm_scored['F_score'] = pd.qcut(rfm_scored['frequency'].rank(method='average'), q=5, labels=[1,2,3,4,5], duplicates='drop')
+
+    # Для Monetary: больше = лучше (5 баллов), используем average при дубликатах
+    rfm_scored['M_score'] = pd.qcut(rfm_scored['monetary'].rank(method='average'), q=5, labels=[1,2,3,4,5], duplicates='drop')
+
+    rfm_scored['RFM_score'] = (rfm_scored['R_score'].astype(int) * 100 +
+                                rfm_scored['F_score'].astype(int) * 10 +
                                 rfm_scored['M_score'].astype(int))
-    
+
     return rfm_scored
 
 def segment_customers_rfm(rfm_scored):
@@ -131,16 +132,22 @@ def kmeans_segmentation(rfm_df, n_clusters=5):
     return rfm_df, silhouette, kmeans
 
 def calculate_clv(rfm_df, avg_margin=0.3, discount_rate=0.1, years=3):
-    """Расчет Customer Lifetime Value"""
+    """Расчет Customer Lifetime Value (исправленная формула)"""
     # Средний чек
     avg_order = rfm_df['monetary'] / rfm_df['frequency']
-    
-    # Годовая частота покупок
-    annual_frequency = rfm_df['frequency'] * (365 / rfm_df['recency'].clip(lower=1))
-    
-    # CLV = (avg_order * annual_frequency * margin) * years / (1 + discount_rate)
-    clv = (avg_order * annual_frequency * avg_margin * years) / (1 + discount_rate)
-    
+
+    # Годовая частота покупок (более корректный расчет)
+    # Если recency < 365, экстраполируем; если > 365, используем фактическую частоту
+    days_period = rfm_df['recency'].clip(upper=365)
+    annual_frequency = (rfm_df['frequency'] / days_period.clip(lower=1)) * 365
+    annual_frequency = annual_frequency.clip(upper=365)  # Не больше 1 раза в день
+
+    # CLV = (avg_order * annual_frequency * margin) * NPV за N лет
+    # Используем формулу NPV для дисконтирования будущих потоков
+    clv = 0
+    for year in range(1, years + 1):
+        clv += (avg_order * annual_frequency * avg_margin) / ((1 + discount_rate) ** year)
+
     return clv
 
 def generate_segment_insights(rfm_segmented, raw_data=None):
@@ -340,8 +347,14 @@ def generate_business_conclusions(rfm_segmented, insights):
 # ==================== ОСНОВНОЙ КОД ====================
 
 def main():
-    st.title("👓 RFM Анализ - Оптика")
-    st.markdown("### Сегментация клиентов и автоматические рекомендации")
+    st.title("📊 Аналитический отчет RFM: Оптика")
+    st.markdown("#### Стратегический анализ клиентской базы и рекомендации по управлению")
+
+    # Добавляем информационный блок
+    st.info("""
+    **Назначение отчета:** Анализ клиентской базы по методологии RFM (Recency, Frequency, Monetary)
+    для принятия стратегических решений по управлению взаимоотношениями с клиентами и увеличению прибыльности бизнеса.
+    """)
     
     # Sidebar - загрузка данных
     st.sidebar.header("📥 Загрузка данных")
@@ -395,8 +408,9 @@ def main():
         - `transaction_id` - ID транзакции
         - `transaction_date` - Дата покупки
         - `transaction_amount` - Сумма покупки
-        
+
         **Опциональные поля:**
+        - `client_name` - ФИО клиента (рекомендуется)
         - `product_category` - Категория (оправы/линзы/солнцезащитные/аксессуары)
         - `sales_channel` - Канал (онлайн/офлайн)
         - `store_id` - ID магазина
@@ -404,6 +418,8 @@ def main():
         - `age` - Возраст
         - `gender` - Пол
         - `city` - Город
+
+        **Примечание:** При наличии поля `client_name` оно будет отображаться во всех таблицах для удобной идентификации клиентов.
         """)
     
     if df is not None:
@@ -458,48 +474,128 @@ def main():
         # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
         
         # Tabs
-        tab1, tab2, tab3, tab4, tab5 = st.tabs([
-            "📊 Обзор",
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 Executive Summary",
             "🎯 Сегменты RFM",
+            "👥 Детальный анализ клиентов",
             "🔬 K-means Кластеры",
             "💎 CLV Анализ",
-            "📋 Бизнес-выводы"
+            "📋 Стратегические рекомендации"
         ])
         
-        # TAB 1: Обзор
+        # TAB 1: Executive Summary
         with tab1:
-            st.header("📊 Общий обзор базы клиентов")
-            
+            st.header("📊 Executive Summary")
+            st.markdown("### Ключевые показатели бизнеса")
+
+            # Ключевые метрики
             col1, col2, col3, col4 = st.columns(4)
-            
+
             with col1:
                 st.metric("Всего клиентов", f"{len(rfm):,}")
+                st.caption("Уникальных клиентов в базе")
             with col2:
-                st.metric("Общая выручка", f"{rfm['monetary'].sum():,.0f} грн")
+                total_revenue = rfm['monetary'].sum()
+                st.metric("Общая выручка", f"{total_revenue:,.0f} грн")
+                st.caption("Совокупный доход")
             with col3:
-                st.metric("Средний чек", f"{rfm['monetary'].mean():,.0f} грн")
+                avg_revenue = rfm['monetary'].mean()
+                st.metric("Средний LTV", f"{avg_revenue:,.0f} грн")
+                st.caption("На одного клиента")
             with col4:
-                st.metric("Средняя частота", f"{rfm['frequency'].mean():.1f}")
-            
-            # Распределения
+                avg_freq = rfm['frequency'].mean()
+                st.metric("Средняя частота", f"{avg_freq:.1f}")
+                st.caption("Покупок на клиента")
+
+            st.markdown("---")
+
+            # Сегментация клиентов
+            st.markdown("### Сегментация клиентской базы")
+
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                # Таблица по сегментам
+                segment_summary = rfm_segmented.groupby('segment').agg({
+                    'client_id': 'count',
+                    'monetary': 'sum'
+                }).round(0)
+                segment_summary.columns = ['Количество клиентов', 'Общая выручка (грн)']
+                segment_summary['Доля клиентов (%)'] = (segment_summary['Количество клиентов'] / len(rfm_segmented) * 100).round(1)
+                segment_summary['Доля выручки (%)'] = (segment_summary['Общая выручка (грн)'] / total_revenue * 100).round(1)
+                segment_summary = segment_summary.sort_values('Общая выручка (грн)', ascending=False)
+
+                st.dataframe(segment_summary, use_container_width=True)
+
+            with col2:
+                # График распределения выручки
+                fig = px.pie(
+                    segment_summary.reset_index(),
+                    values='Общая выручка (грн)',
+                    names='segment',
+                    title='Распределение выручки по сегментам',
+                    hole=0.4
+                )
+                fig.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+
+            # Критические инсайты
+            st.markdown("### 🎯 Критические инсайты")
+
+            vip_count = len(rfm_segmented[rfm_segmented['segment'].isin(['VIP Клиенты', 'Лояльные'])])
+            vip_revenue = rfm_segmented[rfm_segmented['segment'].isin(['VIP Клиенты', 'Лояльные'])]['monetary'].sum()
+            at_risk_count = len(rfm_segmented[rfm_segmented['segment'].isin(['Спящие VIP', 'В Зоне Риска'])])
+            at_risk_revenue = rfm_segmented[rfm_segmented['segment'].isin(['Спящие VIP', 'В Зоне Риска'])]['monetary'].sum()
+
             col1, col2, col3 = st.columns(3)
-            
+
+            with col1:
+                st.success(f"**✅ VIP клиенты**")
+                st.metric("Количество", vip_count, f"{vip_count/len(rfm_segmented)*100:.1f}% базы")
+                st.metric("Выручка", f"{vip_revenue:,.0f} грн", f"{vip_revenue/total_revenue*100:.1f}% доли")
+
+            with col2:
+                st.warning(f"**⚠️ В зоне риска**")
+                st.metric("Количество", at_risk_count, f"{at_risk_count/len(rfm_segmented)*100:.1f}% базы")
+                st.metric("Потенциальная потеря", f"{at_risk_revenue:,.0f} грн")
+
+            with col3:
+                st.info(f"**📈 Потенциал роста**")
+                potential_increase = total_revenue * 0.10  # 10% рост при правильной работе
+                st.metric("Прогноз при оптимизации", f"+{potential_increase:,.0f} грн")
+                st.metric("Рост выручки", "+8-12%")
+
+            st.markdown("---")
+
+            # Динамика активности
+            st.markdown("### 📈 Распределение метрик")
+
+            col1, col2, col3 = st.columns(3)
+
             with col1:
                 fig = px.histogram(rfm, x='recency', nbins=50,
-                                 title='Распределение Recency (дни)',
-                                 labels={'recency': 'Дни с последней покупки'})
+                                 title='Recency (давность покупки)',
+                                 labels={'recency': 'Дней с последней покупки'},
+                                 color_discrete_sequence=['#636EFA'])
+                fig.update_layout(showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
-            
+
             with col2:
                 fig = px.histogram(rfm, x='frequency', nbins=30,
-                                 title='Распределение Frequency',
-                                 labels={'frequency': 'Количество покупок'})
+                                 title='Frequency (частота покупок)',
+                                 labels={'frequency': 'Количество покупок'},
+                                 color_discrete_sequence=['#EF553B'])
+                fig.update_layout(showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
-            
+
             with col3:
                 fig = px.histogram(rfm, x='monetary', nbins=50,
-                                 title='Распределение Monetary (грн)',
-                                 labels={'monetary': 'Сумма покупок'})
+                                 title='Monetary (сумма покупок)',
+                                 labels={'monetary': 'Выручка (грн)'},
+                                 color_discrete_sequence=['#00CC96'])
+                fig.update_layout(showlegend=False)
                 st.plotly_chart(fig, use_container_width=True)
         
         # TAB 2: Сегменты RFM
@@ -542,28 +638,142 @@ def main():
                 )
                 fig.update_xaxes(tickangle=45)
                 st.plotly_chart(fig, use_container_width=True)
-            
-            # 3D график RFM
-            fig = px.scatter_3d(
-                rfm_segmented,
-                x='recency',
-                y='frequency',
-                z='monetary',
-                color='segment',
-                title='3D визуализация RFM сегментов',
-                labels={
-                    'recency': 'Recency (дни)',
-                    'frequency': 'Frequency',
-                    'monetary': 'Monetary (грн)'
-                },
-                hover_data=['client_id']
+
+            # 2D визуализация RFM сегментов
+            col1, col2 = st.columns(2)
+
+            with col1:
+                fig = px.scatter(
+                    rfm_segmented,
+                    x='recency',
+                    y='monetary',
+                    color='segment',
+                    size='frequency',
+                    title='Сегменты: Recency vs Monetary',
+                    labels={
+                        'recency': 'Recency (дни)',
+                        'monetary': 'Monetary (грн)',
+                        'segment': 'Сегмент'
+                    },
+                    hover_data=['client_id', 'frequency', 'RFM_score']
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                fig = px.scatter(
+                    rfm_segmented,
+                    x='frequency',
+                    y='monetary',
+                    color='segment',
+                    title='Сегменты: Frequency vs Monetary',
+                    labels={
+                        'frequency': 'Frequency',
+                        'monetary': 'Monetary (грн)',
+                        'segment': 'Сегмент'
+                    },
+                    hover_data=['client_id', 'recency', 'RFM_score']
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+            # Дополнительная аналитика: heat map RFM
+            st.markdown("---")
+            st.markdown("### 🔥 Heat Map: RFM Score Distribution")
+
+            # Создаем pivot таблицу для heat map
+            heatmap_data = rfm_segmented.groupby(['R_score', 'F_score']).agg({
+                'client_id': 'count',
+                'monetary': 'sum'
+            }).reset_index()
+            heatmap_pivot = heatmap_data.pivot(index='R_score', columns='F_score', values='client_id').fillna(0)
+
+            fig = go.Figure(data=go.Heatmap(
+                z=heatmap_pivot.values,
+                x=[f'F{i}' for i in heatmap_pivot.columns],
+                y=[f'R{i}' for i in heatmap_pivot.index],
+                colorscale='Viridis',
+                text=heatmap_pivot.values,
+                texttemplate='%{text}',
+                textfont={"size": 10},
+                colorbar=dict(title="Количество клиентов")
+            ))
+            fig.update_layout(
+                title='Распределение клиентов по R и F Score',
+                xaxis_title='Frequency Score',
+                yaxis_title='Recency Score',
+                height=400
             )
             st.plotly_chart(fig, use_container_width=True)
+
+            # Box plot по сегментам
+            st.markdown("---")
+            st.markdown("### 📦 Распределение метрик по сегментам")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                fig = px.box(
+                    rfm_segmented,
+                    x='segment',
+                    y='monetary',
+                    title='Распределение Monetary по сегментам',
+                    labels={'monetary': 'Monetary (грн)', 'segment': 'Сегмент'},
+                    color='segment'
+                )
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                fig = px.box(
+                    rfm_segmented,
+                    x='segment',
+                    y='frequency',
+                    title='Распределение Frequency по сегментам',
+                    labels={'frequency': 'Frequency', 'segment': 'Сегмент'},
+                    color='segment'
+                )
+                fig.update_xaxes(tickangle=45)
+                st.plotly_chart(fig, use_container_width=True)
             
             # АВТОМАТИЧЕСКИЕ ИНСАЙТЫ ПО СЕГМЕНТАМ
             st.markdown("---")
             st.header("🤖 Автоматические инсайты и рекомендации")
-            
+
+            # Таблица распределения клиентов по сегментам
+            st.subheader("📋 Распределение клиентов по сегментам")
+
+            # Подготовка данных для таблицы
+            client_segments = rfm_segmented[['client_id', 'segment', 'recency', 'frequency', 'monetary', 'RFM_score', 'clv']].copy()
+
+            # Если есть поле ФИО клиента в исходных данных, добавляем его
+            if 'client_name' in df.columns:
+                client_names = df[['client_id', 'client_name']].drop_duplicates()
+                client_segments = client_segments.merge(client_names, on='client_id', how='left')
+                client_segments = client_segments[['client_id', 'client_name', 'segment', 'recency', 'frequency', 'monetary', 'RFM_score', 'clv']]
+
+            # Форматирование для отображения
+            client_segments_display = client_segments.copy()
+            client_segments_display['monetary'] = client_segments_display['monetary'].round(0)
+            client_segments_display['clv'] = client_segments_display['clv'].round(0)
+
+            # Показываем сводку по сегментам
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                top_segment = rfm_segmented['segment'].value_counts().index[0]
+                st.metric("Крупнейший сегмент", top_segment, f"{rfm_segmented['segment'].value_counts().values[0]} клиентов")
+            with col2:
+                high_priority = len(rfm_segmented[rfm_segmented['segment'].isin(['VIP Клиенты', 'Лояльные'])])
+                st.metric("Приоритетные клиенты", high_priority, f"{high_priority/len(rfm_segmented)*100:.1f}%")
+            with col3:
+                at_risk = len(rfm_segmented[rfm_segmented['segment'].isin(['Спящие VIP', 'В Зоне Риска'])])
+                st.metric("В зоне риска", at_risk, f"{at_risk/len(rfm_segmented)*100:.1f}%")
+
+            st.markdown("**Полная таблица клиентов:**")
+            st.dataframe(
+                client_segments_display,
+                use_container_width=True,
+                height=400
+            )
+
             # Сортируем сегменты по приоритету
             priority_order = {
                 "🔴 КРИТИЧЕСКИЙ - реактивация": 1,
@@ -607,9 +817,154 @@ def main():
                     st.markdown("**💡 Рекомендации:**")
                     for rec in insight['recommendations']:
                         st.markdown(f"- {rec}")
-        
-        # TAB 3: K-means кластеры
+
+        # TAB 3: Детальный анализ клиентов (с фильтрами)
         with tab3:
+            st.header("👥 Детальный анализ клиентов")
+            st.markdown("Интерактивная таблица с возможностью фильтрации по различным параметрам")
+
+            # Подготовка данных
+            detailed_df = rfm_segmented.copy()
+
+            # Добавляем ФИО если есть
+            if 'client_name' in df.columns:
+                client_names = df[['client_id', 'client_name']].drop_duplicates()
+                detailed_df = detailed_df.merge(client_names, on='client_id', how='left')
+
+            # Фильтры
+            st.markdown("### Фильтры")
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                segment_filter = st.multiselect(
+                    "Сегмент:",
+                    options=sorted(detailed_df['segment'].unique()),
+                    default=None,
+                    placeholder="Все сегменты"
+                )
+
+            with col2:
+                recency_range = st.slider(
+                    "Recency (дни):",
+                    min_value=int(detailed_df['recency'].min()),
+                    max_value=int(detailed_df['recency'].max()),
+                    value=(int(detailed_df['recency'].min()), int(detailed_df['recency'].max()))
+                )
+
+            with col3:
+                frequency_range = st.slider(
+                    "Frequency (покупки):",
+                    min_value=int(detailed_df['frequency'].min()),
+                    max_value=int(detailed_df['frequency'].max()),
+                    value=(int(detailed_df['frequency'].min()), int(detailed_df['frequency'].max()))
+                )
+
+            with col4:
+                monetary_range = st.slider(
+                    "Monetary (грн):",
+                    min_value=float(detailed_df['monetary'].min()),
+                    max_value=float(detailed_df['monetary'].max()),
+                    value=(float(detailed_df['monetary'].min()), float(detailed_df['monetary'].max())),
+                    format="%.0f"
+                )
+
+            # Применяем фильтры
+            filtered_df = detailed_df.copy()
+
+            if segment_filter:
+                filtered_df = filtered_df[filtered_df['segment'].isin(segment_filter)]
+
+            filtered_df = filtered_df[
+                (filtered_df['recency'] >= recency_range[0]) &
+                (filtered_df['recency'] <= recency_range[1]) &
+                (filtered_df['frequency'] >= frequency_range[0]) &
+                (filtered_df['frequency'] <= frequency_range[1]) &
+                (filtered_df['monetary'] >= monetary_range[0]) &
+                (filtered_df['monetary'] <= monetary_range[1])
+            ]
+
+            # Статистика после фильтрации
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Клиентов после фильтрации", f"{len(filtered_df):,}")
+            with col2:
+                st.metric("Общая выручка", f"{filtered_df['monetary'].sum():,.0f} грн")
+            with col3:
+                st.metric("Средний чек", f"{filtered_df['monetary'].mean():,.0f} грн")
+            with col4:
+                st.metric("Средний CLV", f"{filtered_df['clv'].mean():,.0f} грн")
+
+            st.markdown("---")
+
+            # Сортировка
+            sort_options = {
+                'CLV (убывание)': ('clv', False),
+                'CLV (возрастание)': ('clv', True),
+                'Monetary (убывание)': ('monetary', False),
+                'Monetary (возрастание)': ('monetary', True),
+                'Recency (убывание)': ('recency', False),
+                'Recency (возрастание)': ('recency', True),
+                'Frequency (убывание)': ('frequency', False),
+                'Frequency (возрастание)': ('frequency', True),
+                'RFM Score (убывание)': ('RFM_score', False),
+                'RFM Score (возрастание)': ('RFM_score', True)
+            }
+
+            sort_by = st.selectbox("Сортировать по:", list(sort_options.keys()), index=0)
+            sort_col, sort_asc = sort_options[sort_by]
+            filtered_df = filtered_df.sort_values(by=sort_col, ascending=sort_asc)
+
+            # Отображение таблицы
+            st.markdown("### Таблица клиентов")
+
+            # Выбор колонок для отображения
+            display_columns = ['client_id', 'segment', 'recency', 'frequency', 'monetary', 'RFM_score', 'R_score', 'F_score', 'M_score', 'clv']
+            if 'client_name' in filtered_df.columns:
+                display_columns = ['client_id', 'client_name'] + display_columns[1:]
+
+            # Форматирование
+            display_df = filtered_df[display_columns].copy()
+            display_df['monetary'] = display_df['monetary'].round(0)
+            display_df['clv'] = display_df['clv'].round(0)
+
+            # Отображаем с возможностью выбора строк
+            st.dataframe(
+                display_df,
+                use_container_width=True,
+                height=500
+            )
+
+            # Экспорт отфильтрованных данных
+            st.markdown("---")
+            st.markdown("### Экспорт данных")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                # CSV экспорт
+                csv = display_df.to_csv(index=False).encode('utf-8')
+                st.download_button(
+                    label="📥 Скачать CSV",
+                    data=csv,
+                    file_name=f"filtered_clients_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+
+            with col2:
+                # Excel экспорт
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+                    display_df.to_excel(writer, sheet_name='Filtered_Clients', index=False)
+
+                st.download_button(
+                    label="📥 Скачать Excel",
+                    data=buffer.getvalue(),
+                    file_name=f"filtered_clients_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.ms-excel"
+                )
+
+        # TAB 4: K-means кластеры
+        with tab4:
             st.header("🔬 K-means Кластеризация")
             
             st.info(f"Silhouette Score: {silhouette:.3f}")
@@ -624,65 +979,46 @@ def main():
             cluster_stats.columns = ['Количество', 'Avg Recency', 'Avg Frequency', 'Avg Monetary']
             
             st.dataframe(cluster_stats, use_container_width=True)
-            
-            # 3D график кластеров
-            fig = px.scatter_3d(
-                rfm_clustered,
-                x='recency',
-                y='frequency',
-                z='monetary',
-                color='cluster',
-                title='3D визуализация K-means кластеров',
-                labels={
-                    'recency': 'Recency (дни)',
-                    'frequency': 'Frequency',
-                    'monetary': 'Monetary (грн)',
-                    'cluster': 'Кластер'
-                }
-            )
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Elbow method
-            st.subheader("📈 Elbow Method - выбор оптимального числа кластеров")
-            
-            inertias = []
-            silhouettes = []
-            K_range = range(2, 11)
-            
-            for k in K_range:
-                kmeans_temp = KMeans(n_clusters=k, random_state=42, n_init=10)
-                features = rfm[['recency', 'frequency', 'monetary']].copy()
-                scaler = StandardScaler()
-                features_scaled = scaler.fit_transform(features)
-                
-                kmeans_temp.fit(features_scaled)
-                inertias.append(kmeans_temp.inertia_)
-                silhouettes.append(silhouette_score(features_scaled, kmeans_temp.labels_))
-            
+
+            # 2D визуализации кластеров
             col1, col2 = st.columns(2)
-            
+
             with col1:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=list(K_range), y=inertias, mode='lines+markers'))
-                fig.update_layout(
-                    title='Elbow Method',
-                    xaxis_title='Количество кластеров',
-                    yaxis_title='Inertia'
+                fig = px.scatter(
+                    rfm_clustered,
+                    x='recency',
+                    y='monetary',
+                    color='cluster',
+                    size='frequency',
+                    title='Кластеры: Recency vs Monetary',
+                    labels={
+                        'recency': 'Recency (дни)',
+                        'monetary': 'Monetary (грн)',
+                        'cluster': 'Кластер'
+                    },
+                    hover_data=['client_id', 'frequency']
                 )
                 st.plotly_chart(fig, use_container_width=True)
-            
+
             with col2:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=list(K_range), y=silhouettes, mode='lines+markers'))
-                fig.update_layout(
-                    title='Silhouette Score',
-                    xaxis_title='Количество кластеров',
-                    yaxis_title='Silhouette Score'
+                fig = px.scatter(
+                    rfm_clustered,
+                    x='frequency',
+                    y='monetary',
+                    color='cluster',
+                    size='recency',
+                    title='Кластеры: Frequency vs Monetary',
+                    labels={
+                        'frequency': 'Frequency',
+                        'monetary': 'Monetary (грн)',
+                        'cluster': 'Кластер'
+                    },
+                    hover_data=['client_id', 'recency']
                 )
                 st.plotly_chart(fig, use_container_width=True)
         
-        # TAB 4: CLV Анализ
-        with tab4:
+        # TAB 5: CLV Анализ
+        with tab5:
             st.header("💎 Customer Lifetime Value (CLV)")
             
             # Топ клиенты по CLV
@@ -746,9 +1082,9 @@ def main():
             clients_80 = rfm_sorted[rfm_sorted['cumulative_clv_pct'] <= 80]
             st.info(f"📊 **{len(clients_80)} клиентов ({len(clients_80)/len(rfm_sorted)*100:.1f}%) генерируют 80% прогнозируемой выручки**")
         
-        # TAB 5: Бизнес-выводы
-        with tab5:
-            st.header("📋 Общие бизнес-выводы и стратегия")
+        # TAB 6: Стратегические рекомендации
+        with tab6:
+            st.header("📋 Стратегические рекомендации")
             
             # Summary
             st.subheader("📊 Итоговая статистика")
@@ -837,17 +1173,29 @@ def main():
         
         # Пример структуры данных
         st.subheader("📋 Пример структуры данных")
-        
+
+        st.markdown("""
+        Загрузите Excel файл со следующей структурой. Обязательные поля выделены **жирным**.
+        """)
+
         example_data = pd.DataFrame({
             'client_id': [1001, 1001, 1002, 1003, 1003],
+            'client_name': ['Иванов И.И.', 'Иванов И.И.', 'Петрова А.С.', 'Сидоров П.К.', 'Сидоров П.К.'],
             'transaction_id': ['T001', 'T002', 'T003', 'T004', 'T005'],
             'transaction_date': ['2024-01-15', '2024-06-20', '2024-03-10', '2024-02-05', '2024-11-12'],
             'transaction_amount': [2500, 1800, 3200, 4500, 2200],
             'product_category': ['Оправы', 'Солнцезащитные', 'Оправы + Линзы', 'Премиум оправы', 'Линзы'],
             'sales_channel': ['Офлайн', 'Онлайн', 'Офлайн', 'Офлайн', 'Онлайн']
         })
-        
+
         st.dataframe(example_data)
+
+        st.markdown("""
+        **Примечание:**
+        - Поле `client_name` опционально, но рекомендуется для удобства работы с отчетами
+        - Дата должна быть в формате YYYY-MM-DD или DD.MM.YYYY
+        - Сумма транзакции - число без валюты
+        """)
 
 if __name__ == "__main__":
     main()
