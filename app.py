@@ -75,13 +75,28 @@ def create_rfm_scores(rfm_df):
     rfm_scored = rfm_df.copy()
 
     # Для Recency: меньше = лучше (5 баллов)
-    rfm_scored['R_score'] = pd.qcut(rfm_scored['recency'], q=5, labels=[5,4,3,2,1], duplicates='drop')
+    try:
+        rfm_scored['R_score'] = pd.qcut(rfm_scored['recency'], q=5, labels=False, duplicates='drop')
+        # Инвертируем шкалу для Recency (меньше значение = выше балл)
+        max_r = rfm_scored['R_score'].max()
+        rfm_scored['R_score'] = max_r - rfm_scored['R_score'] + 1
+    except ValueError:
+        # Если невозможно создать квантили, используем процентили
+        rfm_scored['R_score'] = pd.cut(rfm_scored['recency'].rank(pct=True), bins=5, labels=False) + 1
+        max_r = rfm_scored['R_score'].max()
+        rfm_scored['R_score'] = max_r - rfm_scored['R_score'] + 1
 
-    # Для Frequency: больше = лучше (5 баллов), используем average при дубликатах
-    rfm_scored['F_score'] = pd.qcut(rfm_scored['frequency'].rank(method='average'), q=5, labels=[1,2,3,4,5], duplicates='drop')
+    # Для Frequency: больше = лучше (5 баллов)
+    try:
+        rfm_scored['F_score'] = pd.qcut(rfm_scored['frequency'], q=5, labels=False, duplicates='drop') + 1
+    except ValueError:
+        rfm_scored['F_score'] = pd.cut(rfm_scored['frequency'].rank(pct=True), bins=5, labels=False) + 1
 
-    # Для Monetary: больше = лучше (5 баллов), используем average при дубликатах
-    rfm_scored['M_score'] = pd.qcut(rfm_scored['monetary'].rank(method='average'), q=5, labels=[1,2,3,4,5], duplicates='drop')
+    # Для Monetary: больше = лучше (5 баллов)
+    try:
+        rfm_scored['M_score'] = pd.qcut(rfm_scored['monetary'], q=5, labels=False, duplicates='drop') + 1
+    except ValueError:
+        rfm_scored['M_score'] = pd.cut(rfm_scored['monetary'].rank(pct=True), bins=5, labels=False) + 1
 
     rfm_scored['RFM_score'] = (rfm_scored['R_score'].astype(int) * 100 +
                                 rfm_scored['F_score'].astype(int) * 10 +
